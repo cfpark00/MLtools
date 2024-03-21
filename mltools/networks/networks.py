@@ -5,6 +5,7 @@ import warnings
 from mltools.networks.network_tools import zero_init, get_conv, get_timestep_embedding
 from mltools.networks.blocks import AttnBlock, ResNetBlock, ResNetDown, ResNetUp
 
+
 class CUNet(nn.Module):
     def __init__(
         self,
@@ -24,9 +25,9 @@ class CUNet(nn.Module):
         verbose: int = 0,
     ):
         super().__init__()
-        self.shape=shape
-        self.chs=chs
-        self.dim=len(self.shape)-1
+        self.shape = shape
+        self.chs = chs
+        self.dim = len(self.shape) - 1
         self.in_channels = self.shape[0]
         self.s_conditioning_channels = s_conditioning_channels
         self.v_conditioning_dims = v_conditioning_dims
@@ -35,7 +36,7 @@ class CUNet(nn.Module):
         self.t_embedding_dim = t_embedding_dim
         self.norm_groups = norm_groups
         self.mid_attn = mid_attn
-        if self.mid_attn and self.dim ==3:
+        if self.mid_attn and self.dim == 3:
             raise ValueError("3D attention very highly discouraged.")
         self.n_attention_heads = n_attention_heads
         self.dropout_prob = dropout_prob
@@ -46,36 +47,40 @@ class CUNet(nn.Module):
             self.embed_t_conditioning = nn.Sequential(
                 nn.Linear(self.t_embedding_dim, self.t_conditioning_dim),
                 nn.GELU(),
-                nn.Linear(self.t_conditioning_dim,self.t_conditioning_dim),
+                nn.Linear(self.t_conditioning_dim, self.t_conditioning_dim),
                 nn.GELU(),
-                )
-        if len(self.v_conditioning_dims)>0:
-            self.embeds_v_conditionings =nn.ModuleList()
+            )
+        if len(self.v_conditioning_dims) > 0:
+            self.embeds_v_conditionings = nn.ModuleList()
             for v_conditioning_dim in self.v_conditioning_dims:
-                self.embeds_v_conditionings.append(nn.Sequential(
-                    nn.Linear(v_conditioning_dim, self.v_embedding_dim),
-                    nn.GELU(),
-                    nn.Linear(self.v_embedding_dim, self.v_embedding_dim),
-                    nn.GELU(),
-                    ))
-        conditioning_dims=[]
+                self.embeds_v_conditionings.append(
+                    nn.Sequential(
+                        nn.Linear(v_conditioning_dim, self.v_embedding_dim),
+                        nn.GELU(),
+                        nn.Linear(self.v_embedding_dim, self.v_embedding_dim),
+                        nn.GELU(),
+                    )
+                )
+        conditioning_dims = []
         if self.t_conditioning:
             conditioning_dims.append(self.t_conditioning_dim)
         for _ in self.v_conditioning_dims:
             conditioning_dims.append(self.v_embedding_dim)
-        if len(conditioning_dims)==0:
-            conditioning_dims=None
-        self.conditioning_dims=conditioning_dims
-    
+        if len(conditioning_dims) == 0:
+            conditioning_dims = None
+        self.conditioning_dims = conditioning_dims
 
-        self.conv_kernel_size=3
-        self.norm_eps=1e-6
-        self.norm_affine=True
-        self.act="gelu"
+        self.conv_kernel_size = 3
+        self.norm_eps = 1e-6
+        self.norm_affine = True
+        self.act = "gelu"
         self.num_res_blocks = 1
         assert self.conv_kernel_size % 2 == 1, "conv_kernel_size must be odd"
-        norm_params = dict(num_groups=self.norm_groups, eps=self.norm_eps, affine=self.norm_affine)
+        norm_params = dict(
+            num_groups=self.norm_groups, eps=self.norm_eps, affine=self.norm_affine
+        )
         assert self.act in ["gelu", "relu", "silu"], "act must be gelu or relu or silu"
+
         def get_act():
             if self.act == "gelu":
                 return nn.GELU()
@@ -83,6 +88,7 @@ class CUNet(nn.Module):
                 return nn.ReLU()
             elif self.act == "silu":
                 return nn.SiLU()
+
         padding = self.conv_kernel_size // 2
         conv_params = dict(
             kernel_size=self.conv_kernel_size,
@@ -101,10 +107,13 @@ class CUNet(nn.Module):
 
         self.n_sizes = len(self.chs)
         self.conv_in = get_conv(
-            self.in_channels+self.s_conditioning_channels, self.chs[0], dim=self.dim, **conv_params
+            self.in_channels + self.s_conditioning_channels,
+            self.chs[0],
+            dim=self.dim,
+            **conv_params,
         )
 
-        #down
+        # down
         self.downs = nn.ModuleList()
         for i_level in range(self.n_sizes):
             ch_in = chs[0] if i_level == 0 else chs[i_level - 1]
@@ -130,15 +139,21 @@ class CUNet(nn.Module):
 
         # upsampling
         self.ups = nn.ModuleList()
-        ch_skip=0
+        ch_skip = 0
         for i_level in reversed(range(self.n_sizes)):
             ch_in = self.chs[i_level]
             ch_out = self.chs[0] if i_level == 0 else self.chs[i_level - 1]  # for up
             resnets = nn.ModuleList()
             for i_resnet in range(self.num_res_blocks):
-                resnets.append(ResNetBlock(ch_in+(ch_skip if i_resnet==0 else 0), ch_in, **resnet_params))
-            up = ResNetUp(resnet_blocks=resnets,ch_out=ch_out)
-            ch_skip=ch_out
+                resnets.append(
+                    ResNetBlock(
+                        ch_in + (ch_skip if i_resnet == 0 else 0),
+                        ch_in,
+                        **resnet_params,
+                    )
+                )
+            up = ResNetUp(resnet_blocks=resnets, ch_out=ch_out)
+            ch_skip = ch_out
             self.ups.append(up)
 
         self.norm_out = nn.GroupNorm(num_channels=ch_out, **norm_params)
@@ -150,7 +165,6 @@ class CUNet(nn.Module):
             init=zero_init,
             **conv_params,
         )
-
 
     def forward(self, x, t=None, s_conditioning=None, v_conditionings=None):
         if s_conditioning is not None:
@@ -169,13 +183,13 @@ class CUNet(nn.Module):
         if t is not None:
             if not self.t_conditioning:
                 raise ValueError("t is not None, but t_conditioning is False")
-            t=t.expand(x_concat.shape[0]).clone()#this clone has to be done for the t_embedding step
+            t = t.expand(
+                x_concat.shape[0]
+            ).clone()  # this clone has to be done for the t_embedding step
             assert t.shape == (x_concat.shape[0],)
 
-            t_embedding = get_timestep_embedding(
-                t, self.t_embedding_dim
-            )
-        
+            t_embedding = get_timestep_embedding(t, self.t_embedding_dim)
+
             t_cond = self.embed_t_conditioning(t_embedding)
             conditionings.append(t_cond)
         else:
@@ -193,42 +207,47 @@ class CUNet(nn.Module):
                     )
                 v_cond = self.embeds_v_conditionings[i](v_conditioning)
                 conditionings.append(v_cond)
-        
+
         if len(conditionings) == 0:
             conditionings = None
 
         h = x_concat  # (B, C, H, W, D)
 
         h = self.conv_in(x_concat)
-        #print(h.shape)
-        skips=[]
+        # print(h.shape)
+        skips = []
         for i, down in enumerate(self.downs):
             h, h_skip = down(
                 h, conditionings=conditionings, no_down=(i == (len(self.downs) - 1))
             )
-            #print(i,h.shape)
+            # print(i,h.shape)
             if h_skip is not None:
                 skips.append(h_skip)
-        #print("total skips:",len(skips),[skip.shape for skip in skips])
+        # print("total skips:",len(skips),[skip.shape for skip in skips])
 
         # middle
         h = self.mid1(h, conditionings=conditionings)
-        #print("m1",h.shape)
+        # print("m1",h.shape)
         if self.mid_attn:
             h = self.mid_attn1(h)
-            #print("ma1",h.shape)
+            # print("ma1",h.shape)
         h = self.mid2(h, conditionings=conditionings)
-        #print("m2",h.shape)
+        # print("m2",h.shape)
 
         # upsampling
         for i, up in enumerate(self.ups):
             x_skip = skips.pop() if len(skips) > 0 else None
-            h = up(h, x_skip=x_skip, conditionings=conditionings, no_up=(i == self.n_sizes - 1))
-            #print(i,h.shape)
+            h = up(
+                h,
+                x_skip=x_skip,
+                conditionings=conditionings,
+                no_up=(i == self.n_sizes - 1),
+            )
+            # print(i,h.shape)
         h = self.norm_out(h)
         h = self.act_out(h)
         h = self.conv_out(h)
-        return h+x
+        return h + x
 
 
 class Encoder(nn.Module):
@@ -251,7 +270,7 @@ class Encoder(nn.Module):
         conv_padding_mode="zeros",
     ):
         super().__init__()
-        self.shape=shape
+        self.shape = shape
         self.in_channels = self.shape[0]
         assert self.shape[1] == self.shape[2], "input must be square"
         self.input_size = self.shape[1]
@@ -259,7 +278,7 @@ class Encoder(nn.Module):
         self.dim = len(self.shape) - 1
         self.attn_sizes = attn_sizes
         self.mid_attn = mid_attn
-        if (len(self.attn_sizes)>0 or self.mid_attn) and self.dim ==3:
+        if (len(self.attn_sizes) > 0 or self.mid_attn) and self.dim == 3:
             raise ValueError("3D attention very highly discouraged.")
         self.num_res_blocks = num_res_blocks
         self.dropout_prob = dropout_prob
@@ -399,7 +418,7 @@ class Decoder(nn.Module):
         conv_padding_mode="zeros",
     ):
         super().__init__()
-        self.shape=shape
+        self.shape = shape
         assert self.shape[1] == self.shape[2], "input must be square"
         self.in_channels = self.shape[0]
         self.input_size = self.shape[1]
@@ -407,7 +426,7 @@ class Decoder(nn.Module):
         self.dim = len(self.shape) - 1
         self.attn_sizes = attn_sizes
         self.mid_attn = mid_attn
-        if (len(self.attn_sizes)>0 or self.mid_attn) and self.dim ==3:
+        if (len(self.attn_sizes) > 0 or self.mid_attn) and self.dim == 3:
             raise ValueError("3D attention very highly discouraged.")
         self.num_res_blocks = num_res_blocks
         self.dropout_prob = dropout_prob

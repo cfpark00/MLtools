@@ -577,13 +577,13 @@ class SmartEM:
             self.error_net = UNet.UNet(
                 n_channels=1,
                 n_classes=(2 if self.params["error_net_type"] == "cat" else 1),
-                **self.params["error_net_params"]
+                **self.params["error_net_params"],
             )
         elif self.params["error_net_package"] == "UNet2":
             self.error_net = UNet2.UNet(
                 n_channels=1,
                 n_classes=(2 if self.params["error_net_type"] == "cat" else 1),
-                **self.params["error_net_params"]
+                **self.params["error_net_params"],
             )
         else:
             assert False, "not an option"

@@ -24,9 +24,9 @@ def get_conv(in_channels, out_channels, **kwargs):
         "transposed": False,
     }
     def_params.update(kwargs)
-    dim=def_params.pop("dim")
-    transposed=def_params.pop("transposed")
-    init=def_params.pop("init")
+    dim = def_params.pop("dim")
+    transposed = def_params.pop("transposed")
+    init = def_params.pop("init")
     if dim == 2:
         conv = nn.ConvTranspose2d if transposed else nn.Conv2d
         return init(conv(in_channels, out_channels, **def_params))

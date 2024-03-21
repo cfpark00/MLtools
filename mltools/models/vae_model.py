@@ -18,7 +18,7 @@ class AutoencoderKL(LightningModule):
         nll_loss_type="l1",
         kl_weight=0.000001,
         draw_figure=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
         # self.image_key = image_key
@@ -26,7 +26,7 @@ class AutoencoderKL(LightningModule):
         self.enc_dec_params = enc_dec_params
         self.encoder = Encoder(**self.enc_dec_params)
         self.decoder = Decoder(**self.enc_dec_params)
-        self.dim=self.encoder.dim
+        self.dim = self.encoder.dim
         self.embed_dim = embed_dim
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay

@@ -115,8 +115,7 @@ class ResNetBlock(nn.Module):
             assert len(conditionings) == len(self.conditioning_dims)
             assert all(
                 [
-                    conditionings[i].shape
-                    == (x.shape[0], self.conditioning_dims[i])
+                    conditionings[i].shape == (x.shape[0], self.conditioning_dims[i])
                     for i in range(len(conditionings))
                 ]
             )

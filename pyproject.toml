@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=58.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mltools"
+version = "0.1.0"
+description = "A collection of Data/ML tools"
+readme = "README.md"
+authors = [{ name = "Core Francisco Park", email = "corefranciscopark@g.harvard.edu" }]
+license = { file = "LICENSE" }  # If you have a LICENSE file, include this line
+urls = { "Homepage" = "https://github.com/cfpark00/MLtools" }
+requires-python = ">3.10.0"
+dependencies = [
+    "numpy>=1.24.1",
+    "scipy>=1.11.1",
+    "opencv-python>=4.8.0",
+    "scikit-image>=0.21.0",
+    "pillow>=9.3.0",
+    "h5py>=3.9.0",
+    "tqdm>=4.66.1",
+    "lightning>=2.2.1",
+]
+
+[tool.setuptools]
+packages = ["mltools"]

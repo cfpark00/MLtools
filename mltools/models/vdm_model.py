@@ -59,8 +59,8 @@ class VDM(nn.Module):
             "learned_nn",
             "sigmoid",
         ], f"Unknown noise schedule {noise_schedule}"
-        self.gamma_min=gamma_min
-        self.gamma_max=gamma_max
+        self.gamma_min = gamma_min
+        self.gamma_max = gamma_max
         if noise_schedule == "fixed_linear":
             self.gamma = FixedLinearSchedule(self.gamma_min, self.gamma_max)
         elif noise_schedule == "learned_linear":
@@ -89,8 +89,8 @@ class VDM(nn.Module):
         with torch.enable_grad():  # Need gradient to compute loss even when evaluating
             times = times.view((times.shape[0],) + (1,) * (x.ndim - 1))
             gamma_t = self.gamma(times)
-        alpha= self.alpha(gamma_t)
-        sigma= self.sigma(gamma_t)
+        alpha = self.alpha(gamma_t)
+        sigma = self.sigma(gamma_t)
         if noise is None:
             noise = torch.randn_like(x)
         return alpha * x + noise * sigma, gamma_t
@@ -236,7 +236,7 @@ class VDM(nn.Module):
         pred_noise = self.score_model(
             x_t,
             s_conditioning=conditioning,
-            t=(gamma_t.squeeze()-self.gamma_min)/(self.gamma_max-self.gamma_min),
+            t=(gamma_t.squeeze() - self.gamma_min) / (self.gamma_max - self.gamma_min),
             v_conditionings=conditioning_values,
         )
 
@@ -324,7 +324,7 @@ class VDM(nn.Module):
         pred_noise = self.score_model(
             zt,
             s_conditioning=conditioning,
-            t=(gamma_t-self.gamma_min)/(self.gamma_max-self.gamma_min),
+            t=(gamma_t - self.gamma_min) / (self.gamma_max - self.gamma_min),
             v_conditionings=conditioning_values,
         )
         if not return_ddnm:
