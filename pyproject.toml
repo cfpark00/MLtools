@@ -7,7 +7,7 @@ name = "mltools"
 version = "0.1.0"
 description = "A collection of Data/ML tools"
 readme = "README.md"
-authors = [{ name = "Core Francisco Park", email = "corefranciscopark@g.harvard.edu" }]
+authors = [{ name = "Core Francisco Park", email = "cfpark00@gmail.com" }]
 license = { file = "LICENSE" }  # If you have a LICENSE file, include this line
 urls = { "Homepage" = "https://github.com/cfpark00/MLtools" }
 requires-python = ">3.10.0"
