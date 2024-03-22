@@ -10,6 +10,7 @@ class CUNet(nn.Module):
     def __init__(
         self,
         shape=(1, 256, 256),
+        out_channels=None,
         chs=[48, 96, 192, 384],
         s_conditioning_channels: int = 0,
         v_conditioning_dims: list = [],
@@ -29,6 +30,10 @@ class CUNet(nn.Module):
         self.chs = chs
         self.dim = len(self.shape) - 1
         self.in_channels = self.shape[0]
+        if out_channels is None:
+            self.out_channels = self.in_channels
+        else:
+            self.out_channels = out_channels
         self.s_conditioning_channels = s_conditioning_channels
         self.v_conditioning_dims = v_conditioning_dims
         self.v_embedding_dim = v_embedding_dim
@@ -160,11 +165,15 @@ class CUNet(nn.Module):
         self.act_out = get_act()
         self.conv_out = get_conv(
             in_channels=ch_out,
-            out_channels=self.in_channels,
+            out_channels=self.out_channels,
             dim=self.dim,
             init=zero_init,
             **conv_params,
         )
+
+        if self.in_channels != self.out_channels:
+            self.conv_residual_out= get_conv(in_channels=self.in_channels, out_channels=self.out_channels,
+                                             dim=self.dim, init=zero_init, **conv_params)
 
     def forward(self, x, t=None, s_conditioning=None, v_conditionings=None):
         if s_conditioning is not None:
@@ -247,6 +256,8 @@ class CUNet(nn.Module):
         h = self.norm_out(h)
         h = self.act_out(h)
         h = self.conv_out(h)
+        if self.in_channels != self.out_channels:
+            x = self.conv_residual_out(x)
         return h + x
 
 

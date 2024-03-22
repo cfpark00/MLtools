@@ -55,6 +55,9 @@ class AutoencoderKL(LightningModule):
         )
         self.logvar = nn.Parameter(torch.zeros(size=(), dtype=torch.float32))
 
+        ###kwargs
+        self.kwargs=kwargs
+
     def encode(self, x):
         h = self.encoder(x)
         moments = self.quant_conv(h)
@@ -131,4 +134,14 @@ class AutoencoderKL(LightningModule):
             lr=self.hparams.learning_rate,
             weight_decay=self.hparams.weight_decay,
         )
+        if "reduce_lr_on_plateau" in self.kwargs:
+            lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **self.kwargs["reduce_lr_on_plateau"])
+            lr_scheduler_config = {
+                "scheduler": lr_scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+                "monitor": "val_loss",
+                "strict": True,
+                }
+            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler_config}
         return optimizer

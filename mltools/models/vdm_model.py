@@ -408,8 +408,6 @@ class LightVDM(LightningModule):
         weight_decay: float = 1.0e-5,
         n_sampling_steps: int = 250,
         image_shape: Tuple[int] = (1, 256, 256),
-        conditioning_values=0,
-        conditioning_channels=0,
         gamma_min: float = -13.3,
         gamma_max: float = 5.0,
         draw_figure=None,
@@ -425,8 +423,6 @@ class LightVDM(LightningModule):
         """
         super().__init__()
         self.save_hyperparameters(ignore=["score_model", "draw_figure"])
-        self.conditioning_values = conditioning_values
-        self.conditioning_channels = conditioning_channels
         self.model = VDM(
             score_model=score_model,
             gamma_min=gamma_min,
