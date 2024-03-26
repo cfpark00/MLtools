@@ -25,11 +25,6 @@ class VDM(nn.Module):
         gamma_min: float = -13.3,
         gamma_max: float = 5.0,
         antithetic_time_sampling: bool = True,
-        image_shape: Tuple[int] = (
-            1,
-            256,
-            256,
-        ),
         data_noise: float = 1.0e-3,
     ):
         """Variational diffusion model, continuous time implementation of arxiv:2107.00630.
@@ -42,7 +37,6 @@ class VDM(nn.Module):
             gamma_max (float, optional): maximum gamma value. Defaults to 5.0.
             antithetic_time_sampling (bool, optional): whether to do antithetic time sampling.
             Defaults to True.
-            image_shape (Tuple[int], optional): image shape. Defaults to ( 3, 32, 32, ).
             data_noise (float, optional): noise in data, used for reconstruction loss.
             Defaults to 1.0e-3.
 
@@ -51,7 +45,6 @@ class VDM(nn.Module):
         """
         super().__init__()
         self.score_model = score_model
-        self.image_shape = image_shape
         self.data_noise = data_noise
         assert noise_schedule in [
             "fixed_linear",
@@ -370,7 +363,7 @@ class VDM(nn.Module):
         """
         if z is None:
             z = torch.randn(
-                (batch_size, *self.image_shape),
+                (batch_size, *self.score_model.shape),
                 device=device,
             )
         steps = torch.linspace(
@@ -407,7 +400,6 @@ class LightVDM(LightningModule):
         learning_rate: float = 3.0e-4,
         weight_decay: float = 1.0e-5,
         n_sampling_steps: int = 250,
-        image_shape: Tuple[int] = (1, 256, 256),
         gamma_min: float = -13.3,
         gamma_max: float = 5.0,
         draw_figure=None,
@@ -427,7 +419,6 @@ class LightVDM(LightningModule):
             score_model=score_model,
             gamma_min=gamma_min,
             gamma_max=gamma_max,
-            image_shape=image_shape,
             **kwargs,
         )
         self.draw_figure = draw_figure

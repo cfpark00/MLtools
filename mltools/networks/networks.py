@@ -18,7 +18,6 @@ class CUNet(nn.Module):
         t_conditioning=False,
         t_embedding_dim=64,
         norm_groups: int = 8,
-        n_blocks: int = 4,
         mid_attn=True,
         n_attention_heads: int = 4,
         dropout_prob: float = 0.1,
