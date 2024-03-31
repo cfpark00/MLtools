@@ -29,4 +29,6 @@ def get_freer_gpu(report=True):
     if report:
         print("memory_available", memory_available)
         print("best GPU:", i_gpu)
+    #remove tmp files
+    os.system("rm tmp_total tmp_reserved tmp_used")
     return i_gpu
