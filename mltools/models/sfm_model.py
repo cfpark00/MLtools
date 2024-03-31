@@ -182,7 +182,7 @@ class LightSFM(LightningModule):
                     self.logger.experiment.log_figure(figure=fig)
 
         self.log("val_loss", loss, prog_bar=True)
-        return loss,samples
+        return loss
 
     def configure_optimizers(
         self,
