@@ -19,3 +19,22 @@ def repack(h5_file_path):
     h5new.close()
     os.remove(h5_file_path)
     os.rename(h5_file_path + "_temp", h5_file_path)
+
+def display_attrs(h5,pref=""):
+    print(pref+"attrs:",end=" ")
+    for key, val in h5.attrs.items():
+        print("%s: %s" % (key, val),end="; ")
+    print()
+
+def display_recusive(h5,pref=""):
+    for key in h5.keys():
+        print(pref+key+":")
+        if isinstance(h5[key], h5py.Dataset):
+            print(pref+"  shape:",h5[key].shape)
+        else:
+            display_attrs(h5[key],pref+"  ")
+            display_recusive(h5[key],pref+"  ")
+
+def display_tree(h5_file_path):
+    with h5py.File(h5_file_path, "r") as h5:
+        display_recusive(h5)

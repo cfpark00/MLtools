@@ -202,9 +202,9 @@ class VDM(nn.Module):
     def get_loss(
         self,
         x: Tensor,
-        conditioning: Optional[Tensor] = None,
         noise: Optional[Tensor] = None,
-        conditioning_values=None,
+        reduction="mean",
+        **kwargs
     ) -> float:
         """Get loss for diffusion model. Eq. 11 in arxiv:2107.00630
 
@@ -228,9 +228,8 @@ class VDM(nn.Module):
         # Predict noise added
         pred_noise = self.score_model(
             x_t,
-            s_conditioning=conditioning,
             t=(gamma_t.squeeze() - self.gamma_min) / (self.gamma_max - self.gamma_min),
-            v_conditionings=conditioning_values,
+            **kwargs
         )
 
         # *** Diffusion loss
@@ -256,14 +255,20 @@ class VDM(nn.Module):
 
         # *** Overall loss, Shape (B, ).
         loss = diffusion_loss + latent_loss + recons_loss
-
-        metrics = {
-            "elbo": loss.mean(),
-            "diffusion_loss": diffusion_loss.mean(),
-            "latent_loss": latent_loss.mean(),
-            "reconstruction_loss": recons_loss.mean(),
+        if reduction == "mean":
+            metrics = {
+                "elbo": loss.mean(),
+                "diffusion_loss": diffusion_loss.mean(),
+                "latent_loss": latent_loss.mean(),
+                "reconstruction_loss": recons_loss.mean(),
+            }
+            return loss.mean(), metrics
+        return loss, {
+            "elbo": loss,
+            "diffusion_loss": diffusion_loss,
+            "latent_loss": latent_loss,
+            "reconstruction_loss": recons_loss,
         }
-        return loss.mean(), metrics
 
     def alpha(self, gamma_t: Tensor) -> Tensor:
         """Eq. 4 arxiv:2107.00630
@@ -292,9 +297,8 @@ class VDM(nn.Module):
         zt: Tensor,
         t: Tensor,
         s: Tensor,
-        conditioning: Optional[Tensor] = None,
-        conditioning_values=None,
         return_ddnm=False,
+        **kwargs
     ) -> Tensor:
         """Sample p(z_s|z_t, x) used for standard ancestral sampling. Eq. 34 in arxiv:2107.00630
 
@@ -316,9 +320,8 @@ class VDM(nn.Module):
         sigma_s = self.sigma(gamma_s)
         pred_noise = self.score_model(
             zt,
-            s_conditioning=conditioning,
             t=(gamma_t - self.gamma_min) / (self.gamma_max - self.gamma_min),
-            v_conditionings=conditioning_values,
+            **kwargs
         )
         if not return_ddnm:
             mean = alpha_s / alpha_t * (zt - c * sigma_t * pred_noise)
@@ -343,11 +346,10 @@ class VDM(nn.Module):
         batch_size: int,
         n_sampling_steps: int,
         device: str,
-        conditioning: Optional[Tensor] = None,
-        conditioning_values: Optional[Tensor] = None,
         z: Optional[Tensor] = None,
         return_all=False,
         verbose=False,
+        **kwargs
     ) -> Tensor:
         """Generate new samples given some conditioning vector
 
@@ -381,10 +383,9 @@ class VDM(nn.Module):
         ):
             z = self.sample_zs_given_zt(
                 zt=z,
-                conditioning=conditioning,
                 t=steps[i],
                 s=steps[i + 1],
-                conditioning_values=conditioning_values,
+                **kwargs
             )
             if return_all:
                 zs.append(z)
@@ -424,7 +425,7 @@ class LightVDM(LightningModule):
         self.draw_figure = draw_figure
 
     def forward(
-        self, x: Tensor, conditioning: Tensor = None, conditioning_values: Tensor = None
+        self, x, **kwargs
     ) -> Tensor:
         """get loss for samples
 
@@ -437,7 +438,7 @@ class LightVDM(LightningModule):
             Tensor: loss
         """
         return self.model.get_loss(
-            x=x, conditioning=conditioning, conditioning_values=conditioning_values
+            x=x, **kwargs
         )
 
     def evaluate(self, batch: Tuple, stage: str = None) -> Tensor:
@@ -450,10 +451,11 @@ class LightVDM(LightningModule):
         Returns:
             Tensor: loss function
         """
+        x,conditioning,conditioning_values=self.batch_unpack(batch)
         loss, metrics = self(
-            x=batch["x"],
-            conditioning=batch["conditioning"],
-            conditioning_values=batch["conditioning_values"],
+            x=x,
+            s_conditioning=conditioning,
+            v_conditionings=conditioning_values,
         )
         if self.logger is not None:
             self.logger.log_metrics(metrics)
@@ -479,10 +481,9 @@ class LightVDM(LightningModule):
         self,
         batch_size: int,
         n_sampling_steps: int = 250,
-        conditioning: Optional[Tensor] = None,
-        conditioning_values: Optional[Tensor] = None,
         verbose=False,
         return_all=False,
+        **kwargs
     ) -> Tensor:
         """draw samples from model
 
@@ -499,11 +500,15 @@ class LightVDM(LightningModule):
             batch_size=batch_size,
             n_sampling_steps=n_sampling_steps,
             device=self.device,
-            conditioning=conditioning,
-            conditioning_values=conditioning_values,
             verbose=verbose,
             return_all=return_all,
+            **kwargs
         )
+    def batch_unpack(self,batch):
+        x = batch["x"]
+        conditioning = batch["conditioning"]
+        conditioning_values = batch["conditioning_values"]
+        return x,conditioning,conditioning_values
 
     def validation_step(self, batch: Tuple, batch_idx: int) -> Tensor:
         """validate model
@@ -516,9 +521,7 @@ class LightVDM(LightningModule):
             Tensor: loss
         """
         # sample images during validation and upload to wandb
-        x = batch["x"]
-        conditioning = batch["conditioning"]
-        conditioning_values = batch["conditioning_values"]
+        x,conditioning,conditioning_values=self.batch_unpack(batch)
         loss = self.evaluate(batch, "val")
         self.log_dict({"val_loss": loss})
 
@@ -526,11 +529,12 @@ class LightVDM(LightningModule):
             samples = self.draw_samples(
                 batch_size=len(x),
                 n_sampling_steps=self.hparams.n_sampling_steps,
-                conditioning=conditioning,
-                conditioning_values=conditioning_values,
+                s_conditioning=conditioning,
+                v_conditionings=conditioning_values,
             )
+            batch_plot={"x":x,"conditioning":conditioning,"conditioning_values":conditioning_values}
             if self.draw_figure is not None:
-                fig = self.draw_figure(batch, samples)
+                fig = self.draw_figure(batch_plot, samples)
 
                 if self.logger is not None:
                     self.logger.experiment.log_figure(figure=fig)
@@ -555,3 +559,4 @@ class LightVDM(LightningModule):
             weight_decay=self.hparams.weight_decay,
         )
         return optimizer
+

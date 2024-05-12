@@ -31,19 +31,14 @@ class SigmoidSchedule(nn.Module):
 
 
 class LearnedLinearSchedule(nn.Module):
-    def __init__(self, gamma_min, gamma_max, gamma_min_max=None):
+    def __init__(self, gamma_min, gamma_max):
         super().__init__()
-        self.gamma_min_max = gamma_min_max
-        self.b = nn.Parameter(torch.tensor(gamma_min))
-        self.w = nn.Parameter(torch.tensor(gamma_max - gamma_min))
+        self.b = nn.Parameter(torch.tensor(gamma_min,dtype=torch.float32))
+        self.w = nn.Parameter(torch.tensor(gamma_max - gamma_min,dtype=torch.float32))
 
     def forward(self, t):
-        if self.gamma_min_max is None:
-            return self.b + self.w.abs() * t
-        else:
-            return (
-                torch.clamp(self.b, min=None, max=self.gamma_min_max) + self.w.abs() * t
-            )
+        return self.b + self.w.abs() * t
+
 
 
 class MonotonicLinear(nn.Module):

@@ -43,6 +43,33 @@ class EulerSDE(nn.Module):
             x = self.step_forward(x=x, x0=x0, t=i*self.delta_t, is_last=(i==n_steps-1))
         return x
 
+
+class LeimkuhlerMatthewsSDE(nn.Module):
+    def __init__(self, drift_func, sigma, delta_t):
+        super().__init__()
+        self.drift_func = drift_func
+        self.sigma = sigma
+        self.delta_t =delta_t
+
+    def step_forward(self, x, x0, t: torch.tensor, is_last=False):
+        """Leimkuhler-Matthews."""
+        if is_last:
+            dW = 0.
+        else:
+            dW = torch.sqrt(self.delta_t)*torch.randn(size=x.shape).to(x.device)/np.sqrt(2)
+        bt_term = self.drift_func(t, x, x0)*self.delta_t 
+        sigma_term = self.sigma(t)*dW
+        x += bt_term + sigma_term
+        return x
+
+    def integrate(self, x0,verbose=0):
+        n_steps = int(1/self.delta_t)
+        x = x0.clone()
+        for i in tqdm.tqdm(range(n_steps),desc="Integrating...",disable=verbose==0):
+            x = self.step_forward(x=x, x0=x0, t=i*self.delta_t, is_last=(i==n_steps-1))
+        return x
+    
+
 class SFM(torch.nn.Module):
     """
     Stochastic Flow Matching.

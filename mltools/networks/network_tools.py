@@ -45,7 +45,7 @@ def get_timestep_embedding(
 ):
     timesteps *= T
     # Adapted from tensor2tensor and VDM codebase.
-    assert timesteps.ndim == 1
+    assert timesteps.ndim == 1 or timesteps.ndim == 2
     assert embedding_dim % 2 == 0
     num_timescales = embedding_dim // 2
     inv_timescales = torch.logspace(  # or exp(-linspace(log(min), log(max), n))
@@ -55,5 +55,9 @@ def get_timestep_embedding(
         base=10.0,
         device=timesteps.device,
     )
-    emb = timesteps.to(dtype)[:, None] * inv_timescales[None, :]  # (T, D/2)
-    return torch.cat([emb.sin(), emb.cos()], dim=1)  # (T, D)
+    if timesteps.ndim == 1:
+        emb = timesteps.to(dtype)[:, None] * inv_timescales[None, :]  # (T, D/2)
+        return torch.cat([emb.sin(), emb.cos()], dim=1)  # (T, D)
+    else:
+        emb = timesteps.to(dtype)[:,:,None] * inv_timescales[None,None, :] # (B, T, D/2)
+        return torch.cat([emb.sin(), emb.cos()], dim=2) # (B, T, D)
