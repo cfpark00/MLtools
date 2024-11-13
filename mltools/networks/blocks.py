@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import math
 
-from mltools.networks.network_tools import get_conv, zero_init
+from mltools.networks.network_tools import get_conv, zero_init, patch_interpolate
 
 
 class AttnBlock(nn.Module):
@@ -221,7 +221,16 @@ class SelfAttentionBlock(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.n_embd_head = config.n_embd // config.n_head
+
+        self.block_size = config.block_size
         self.causal= config.causal
+        self.rope=config.get("rope",False)
+        if self.rope:
+            self.create_rope_cache()
+        
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
         # output projection
@@ -229,8 +238,6 @@ class SelfAttentionBlock(nn.Module):
         # regularization
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
         self.dropout = config.dropout
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         if config.flash:
@@ -239,18 +246,69 @@ class SelfAttentionBlock(nn.Module):
         else:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
+            self.create_bias()
             self.flash = False
+
+    def create_rope_cache(self,base=10_000):
+        dim=self.n_embd_head
+        theta = torch.exp(torch.arange(0, dim, 2).float() * (-math.log(base)/ dim))
+        self.register_buffer("theta", theta, persistent=False)
+        seq_idx = torch.arange(self.block_size, dtype=self.theta.dtype, device=self.theta.device)
+        idx_theta = torch.einsum("i, j -> ij", seq_idx, self.theta).float()
+        rope_cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1)
+        self.register_buffer("rope_cache", rope_cache, persistent=False)
+
+    def create_bias(self,device="cpu"):
+        self.register_buffer("bias", torch.tril(torch.ones(self.block_size, self.block_size))
+                                    .view(1, 1, self.block_size, self.block_size).to(device))
+
+    def apply_rope(self,x,input_pos=None):
+        seq_len = x.size(1)
+        # extract the values based on whether input_pos is set or not
+        rope_cache_ = self.rope_cache[:seq_len] if input_pos is None else self.cache[input_pos]
+        # reshape input; the last dimension is used for computing the output.
+        # Cast to float to match the reference implementation
+        # tensor has shape [b, s, n_h, h_d // 2, 2]
+        xshaped = x.float().reshape(*x.shape[:-1], -1, 2)
+
+        # reshape the cache for broadcasting
+        # tensor has shape [b, s, 1, h_d // 2, 2] if packed samples,
+        # otherwise has shape [1, s, 1, h_d // 2, 2]
+        rope_cache_ = rope_cache_.view(-1, xshaped.size(1), 1, xshaped.size(3), 2)
+
+        # tensor has shape [b, s, n_h, h_d // 2, 2]
+        x_out = torch.stack(
+            [
+                xshaped[..., 0] * rope_cache_[..., 0]
+                - xshaped[..., 1] * rope_cache_[..., 1],
+                xshaped[..., 1] * rope_cache_[..., 0]
+                + xshaped[..., 0] * rope_cache_[..., 1],
+            ],
+            -1,
+        )
+        # tensor has shape [b, s, n_h, h_d]
+        x_out = x_out.flatten(3)
+        return x_out.type_as(x)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
+        assert C == self.n_embd, f"Input embedding dimension {C} does not match model embedding dimension {self.n_embd}"
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        if self.rope:
+            kT=k.view(B, T, self.n_head, self.n_embd_head)
+            qT=q.view(B, T, self.n_head, self.n_embd_head)
+            kT=self.apply_rope(kT)
+            qT=self.apply_rope(qT)
+            k=kT.transpose(1, 2)
+            q=qT.transpose(1, 2)
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+        else:
+            k = k.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2) # (B, nh, T, hs)
+            q = q.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2) # (B, nh, T, hs)
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2) # (B, nh, T, hs)
+
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -269,13 +327,99 @@ class SelfAttentionBlock(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
     
+    def cached_forward(self,x,hiddens,suffix="",**kwargs):
+        assert suffix.startswith("^") or suffix==""
+        if not hasattr(self,"bias"):
+            self.create_bias(x.device)
+
+        B, T, C = x.size()
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        if self.rope:
+            kT = k.view(B, T, self.n_head, self.n_embd_head)
+            qT = q.view(B, T, self.n_head, self.n_embd_head)
+            hiddens["kT"+suffix]=kT.detach().clone()
+            hiddens["qT"+suffix]=qT.detach().clone()
+            kT=self.apply_rope(kT)
+            qT=self.apply_rope(qT)
+            k=kT.transpose(1, 2)
+            q=qT.transpose(1, 2)
+            hiddens["k_rope"+suffix]=k.detach().clone()
+            hiddens["q_rope"+suffix]=q.detach().clone()
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            hiddens["v"+suffix]=v.detach().clone()
+        else:
+            k = k.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            hiddens["k"+suffix]=k.detach().clone()
+            q = q.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            hiddens["q"+suffix]=q.detach().clone()
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            hiddens["v"+suffix]=v.detach().clone()
+        #don't flash
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        hiddens["attn_um"+suffix]=att.detach().clone()
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        hiddens["attn"+suffix]=att.detach().clone()
+        att = self.attn_dropout(att)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        hiddens["y_out"+suffix]=y.detach().clone()
+        y = self.resid_dropout(self.c_proj(y))
+        hiddens["y_out_proj"+suffix]=y.detach().clone()
+        return y
+    
+    @torch.no_grad()
+    def patched_forward(self,x,patches,suffix="",**kwargs):
+        assert suffix.startswith("^") or suffix==""
+        if not hasattr(self,"bias"):
+            self.create_bias(x.device)
+
+        B, T, C = x.size()
+        q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
+        if self.rope:
+            kT = k.view(B, T, self.n_head, self.n_embd_head)
+            qT = q.view(B, T, self.n_head, self.n_embd_head)
+            kT=patch_interpolate(kT,"kT"+suffix,patches)
+            qT=patch_interpolate(qT,"qT"+suffix,patches)
+            kT=self.apply_rope(kT)
+            qT=self.apply_rope(qT)
+            k=kT.transpose(1, 2)
+            q=qT.transpose(1, 2)
+            k=patch_interpolate(k,"k_rope"+suffix,patches)
+            q=patch_interpolate(q,"q_rope"+suffix,patches)
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+        else:
+            k = k.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            k=patch_interpolate(k,"k"+suffix,patches)
+            q = q.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            q=patch_interpolate(q,"q"+suffix,patches)
+            v = v.view(B, T, self.n_head, self.n_embd_head).transpose(1, 2)
+            v=patch_interpolate(v,"v"+suffix,patches)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att=patch_interpolate(att,"attn_um"+suffix,patches)
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att=patch_interpolate(att,"attn"+suffix,patches)
+        att = self.attn_dropout(att)
+        y = att @ v
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y=patch_interpolate(y,"y_out"+suffix,patches)
+        y = self.resid_dropout(self.c_proj(y))
+        y=patch_interpolate(y,"y_out_proj"+suffix,patches)
+        return y
+
+    
 class MLPBlock(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
+        self.rmlp=config.get("rmlp",4)
+        #assert integer self.rmlp*n_embd, for e.g. rmlp=0.25
+        self.d_hidden = int(self.rmlp * config.n_embd)
+        assert self.rmlp*config.n_embd==self.d_hidden, "rmlp*n_embd must be an integer"
+        self.c_fc    = nn.Linear(config.n_embd, self.d_hidden, bias=config.bias)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj  = nn.Linear(self.d_hidden, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
@@ -289,12 +433,42 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.has_mlp=config.get("mlp",True)
+        self.has_ln=config.get("ln",True)
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias) if self.has_ln else nn.Identity()
         self.attn = SelfAttentionBlock(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLPBlock(config)
+        if self.has_mlp:
+            self.ln_2 = LayerNorm(config.n_embd, bias=config.bias) if self.has_ln else nn.Identity()
+            self.mlp = MLPBlock(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        if self.has_mlp:
+            x = x + self.mlp(self.ln_2(x))
         return x
+
+    def cached_forward(self,x,hiddens,suffix="",**kwargs):
+        assert suffix.startswith("^") or suffix==""
+        attn_res=self.attn.cached_forward(self.ln_1(x),hiddens,suffix=suffix,**kwargs)
+        hiddens["attn_res"+suffix]=attn_res
+        x=x+attn_res
+        hiddens["x_attn"+suffix]=x.detach().clone()
+        if self.has_mlp:
+            mlp_res=self.mlp(self.ln_2(x))
+            hiddens["mlp_res"+suffix]=mlp_res
+            x=x+mlp_res
+        return x
+    
+    @torch.no_grad()
+    def patched_forward(self,x,patches,suffix="",**kwargs):
+        assert suffix.startswith("^") or suffix==""
+        attn_res=self.attn.patched_forward(self.ln_1(x),patches,suffix=suffix,**kwargs)
+        attn_res=patch_interpolate(attn_res,"attn_res"+suffix,patches)
+        x=x+attn_res
+        x=patch_interpolate(x,"x_attn"+suffix,patches)
+        if self.has_mlp:
+            mlp_res=self.mlp(self.ln_2(x))
+            mlp_res=patch_interpolate(mlp_res,"mlp_res"+suffix,patches)
+            x=x+mlp_res
+        return x
+

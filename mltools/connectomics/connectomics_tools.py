@@ -76,7 +76,7 @@ def write_im(im_path, im):
     cv2.imwrite(im_path, im)
 
 
-def import_matlab(lib_fol):  # "/n/home12/cfpark00/matlabpython/lib/"
+def import_matlab(lib_fol):
     """
     Import matlab engine and matlab module from lib_fol
 

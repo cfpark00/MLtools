@@ -43,7 +43,7 @@ def get_timestep_embedding(
     max_timescale=10_000,
     min_timescale=1,
 ):
-    timesteps *= T
+    timesteps = timesteps* T
     # Adapted from tensor2tensor and VDM codebase.
     assert timesteps.ndim == 1 or timesteps.ndim == 2
     assert embedding_dim % 2 == 0
@@ -61,3 +61,17 @@ def get_timestep_embedding(
     else:
         emb = timesteps.to(dtype)[:,:,None] * inv_timescales[None,None, :] # (B, T, D/2)
         return torch.cat([emb.sin(), emb.cos()], dim=2) # (B, T, D)
+
+def patch_interpolate(
+        x,
+        key,
+        patches,
+):
+    if key not in patches:
+        #print("key not in patches",key,patches.keys())
+        return x
+    #print("patching",key)
+    patch,w = patches[key]
+    assert type(patch)==torch.Tensor and type(w)==float
+    x=x+w*(patch-x)
+    return x

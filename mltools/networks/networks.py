@@ -5,7 +5,7 @@ import warnings
 import math
 import inspect
 
-from mltools.networks.network_tools import zero_init, get_conv, get_timestep_embedding
+from mltools.networks.network_tools import zero_init, get_conv, get_timestep_embedding, patch_interpolate
 from mltools.networks.blocks import AttnBlock, ResNetBlock, ResNetDown, ResNetUp, TransformerBlock, LayerNorm
 from mltools.models.configs import GPTConfig
 
@@ -400,7 +400,19 @@ class CMLP(nn.Module):
                 for embedder,conditioning in zip(embedders,conditionings):
                     h=h+embedder(conditioning)
                 h=self.act(h)
-        return h+x
+        return h
+
+class TiedLinear(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.lin=nn.Linear(in_dim,out_dim,bias=False)
+
+    def forward(self, x):
+        return self.lin(x)
+    
+    def forward_transposed(self, x):
+        #linear but backwards(x will have (b,out_dim) and return (b,in_dim)
+        return x@ self.lin.weight
 
 ###Transformers
 class Transformer(nn.Module):
@@ -411,45 +423,54 @@ class Transformer(nn.Module):
         self.config = config
 
         if not self.config.pos_embed:
-            print("Not using pos embed")
+            if not self.config.rope:
+                print("Not using pos embed or rope: permutation invariant model.")
 
         if embedder is None:
             self.embedder=None
             self.transformer = nn.ModuleDict(dict(
                 wte = (
                     nn.Embedding(config.in_size, config.n_embd) if config.tokenized
-                    else nn.Linear(config.in_size, config.n_embd)
+                    else TiedLinear(config.in_size, config.n_embd)
                 ),
                 wpe = nn.Embedding(config.block_size, config.n_embd) if config.pos_embed else None,
                 drop = nn.Dropout(config.dropout),
                 h = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)]),
-                ln_f = LayerNorm(config.n_embd, bias=config.bias),
+                ln_f = LayerNorm(config.n_embd, bias=config.bias) if self.config.get("ln",True) else nn.Identity(),
             ))
-            self.lm_head = nn.Linear(config.n_embd, config.in_size, bias=False)
-            # with weight tying when using torch.compile() some warnings get generated:
-            # "UserWarning: functional_call was passed multiple values for tied weights.
-            # This behavior is deprecated and will be an error in future versions"
-            # not 100% sure what this is, so far seems to be harmless. TODO investigate
-            self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+            if config.tokenized:
+                self.lm_head = nn.Linear(config.n_embd, config.in_size, bias=False)
+                if config.get("tie_emb",True):
+                    # with weight tying when using torch.compile() some warnings get generated:
+                    # "UserWarning: functional_call was passed multiple values for tied weights.
+                    # This behavior is deprecated and will be an error in future versions"
+                    # not 100% sure what this is, so far seems to be harmless. TODO investigate
+                    self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+
         else:
             assert unembedder is not None
-            self.embedder=embedder
-            for key,embedder in self.embedder.items():
+            self.embedder={}
+            for key,embedder in embedder.items():
                 if isinstance(embedder,nn.Module):
                     self.add_module("embedder_"+key,embedder)
                     self.embedder[key]=getattr(self,"embedder_"+key)
-            self.unembedder=unembedder
-            for unembedder in self.unembedder.items():
+                else:#assert callable
+                    assert callable(embedder)
+                    self.embedder[key]=embedder
+            self.unembedder={}
+            for key,unembedder in unembedder.items():
                 if isinstance(unembedder,nn.Module):
                     self.add_module("unembedder_"+key,unembedder)
                     self.unembedder[key]=getattr(self,"unembedder_"+key)
+                else:#assert callable
+                    assert callable(unembedder)
+                    self.unembedder[key]=unembedder
             self.transformer = nn.ModuleDict(dict(
                 wpe = nn.Embedding(config.block_size, config.n_embd) if config.pos_embed else None,
                 drop = nn.Dropout(config.dropout),
                 h = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)]),
-                ln_f = LayerNorm(config.n_embd, bias=config.bias),
+                ln_f = LayerNorm(config.n_embd, bias=config.bias) if self.config.get("ln",True) else nn.Identity(),
             ))
-
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
@@ -458,6 +479,7 @@ class Transformer(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
     def forward(self, x):
+        #return self.lin(x["x"])
         if self.embedder is not None:
             assert isinstance(x, dict)
             x_dict=x
@@ -479,10 +501,14 @@ class Transformer(nn.Module):
             for block in self.transformer.h:
                 x = block(x)
             x = self.transformer.ln_f(x)
-            logits = self.lm_head(x)
-            return logits
+            if self.config.tokenized:
+                logits = self.lm_head(x)
+                return logits
+            else:
+                res=self.transformer.wte.forward_transposed(x)
+                return res
         else:
-            emb=self.embedder["x"](x)
+            emb=torch.zeros(b,t,self.config.n_embd,device=device)
             if self.config.pos_embed:
                 pos=torch.arange(0,t,dtype=torch.long,device=device)
                 if "pos" in self.embedder:
@@ -491,8 +517,7 @@ class Transformer(nn.Module):
                     pos_emb=self.transformer.wpe(pos)
                 emb=emb+pos_emb
             for key in x_dict.keys():
-                if key in ["x","pos"]:
-                    continue
+                assert key!="pos"
                 emb=emb+self.embedder[key](x_dict[key])
             x=self.transformer.drop(emb)
             for block in self.transformer["h"]:
@@ -500,6 +525,83 @@ class Transformer(nn.Module):
             x=self.transformer.ln_f(x)
             res=self.unembedder["x"](x)
             return res
+
+
+    def cached_forward(self, x,hiddens=None,suffix="", **kwargs):
+        assert suffix.startswith("^") or suffix==""
+        assert self.embedder is None
+        assert self.config.tokenized
+        #
+        assert self.config.dropout==0.0
+        #
+        device = x.device
+        b,t=x.size()
+        assert t<=self.config.block_size,f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        if hiddens is None:
+            hiddens={}
+        tok_emb = self.transformer.wte(x) # token embeddings of shape (b, t, n_embd)
+        hiddens["tok_emb"+suffix]=tok_emb.detach().clone()
+
+        if self.config.pos_embed:
+            pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            hiddens["pos_emb"+suffix]=pos_emb.detach().clone()
+            tok_emb = tok_emb + pos_emb
+        x_i=0
+
+        x = self.transformer.drop(tok_emb)
+        hiddens[f"x_{x_i}"+suffix]=x.detach().clone()
+        x_i+=1
+
+        for block in self.transformer.h:
+            x = block.cached_forward(x,hiddens=hiddens,suffix=suffix+"^"+str(x_i),**kwargs)
+            hiddens[f"x_{x_i}"+suffix]=x.detach().clone()
+            x_i+=1
+
+        x = self.transformer.ln_f(x)
+        hiddens["x_ln_f"+suffix]=x.detach().clone()
+
+        logits = self.lm_head(x)
+        return logits,hiddens
+    
+    @torch.no_grad()
+    def patched_forward(self, x, patches,suffix="", **kwargs):
+        assert suffix.startswith("^") or suffix==""
+        assert self.embedder is None
+        assert self.config.tokenized
+        #
+        assert self.config.dropout==0.0
+        #
+        device = x.device
+        b,t=x.size()
+        assert t<=self.config.block_size,f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        tok_emb = self.transformer.wte(x) # token embeddings of shape (b, t, n_embd)
+        tok_emb=patch_interpolate(tok_emb,"tok_emb"+suffix,patches)
+
+        if self.config.pos_embed:
+            pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            pos_emb=patch_interpolate(pos_emb,"pos_emb"+suffix,patches)
+            tok_emb = tok_emb + pos_emb
+        x_i=0
+        
+        x = self.transformer.drop(tok_emb)
+        x=patch_interpolate(x,"x_"+str(x_i)+suffix,patches)
+        x_i+=1
+
+        for block in self.transformer.h:
+            x = block.patched_forward(x,patches,suffix=suffix+"^"+str(x_i),**kwargs)
+            x=patch_interpolate(x,"x_"+str(x_i)+suffix,patches)
+            x_i+=1
+
+        x = self.transformer.ln_f(x)
+        x=patch_interpolate(x,"x_ln_f"+suffix,patches)
+
+        logits = self.lm_head(x)
+        return logits
+
+
+
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -592,14 +694,16 @@ class Transformer(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        if self.config.verbose > 0:
+            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == 'cuda'
         extra_args = dict(fused=True) if use_fused else dict()
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        print(f"using fused AdamW: {use_fused}")
+        if self.config.verbose > 0:
+            print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
