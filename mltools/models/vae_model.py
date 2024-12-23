@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from lightning.pytorch import LightningModule
 
 from mltools.networks.network_tools import get_conv
 from mltools.networks.networks import Encoder, Decoder
@@ -8,7 +7,7 @@ from mltools.losses import MultiScaleMSE
 from mltools.distributions import DiagonalGaussianDistribution
 
 
-class AutoencoderKL(LightningModule):
+class AutoencoderKL(nn.Module):
     def __init__(
         self,
         enc_dec_params,
@@ -22,7 +21,6 @@ class AutoencoderKL(LightningModule):
     ):
         super().__init__()
         # self.image_key = image_key
-        self.save_hyperparameters(ignore=["draw_figure"])
         self.enc_dec_params = enc_dec_params
         self.encoder = Encoder(**self.enc_dec_params)
         self.decoder = Decoder(**self.enc_dec_params)
@@ -134,14 +132,4 @@ class AutoencoderKL(LightningModule):
             lr=self.hparams.learning_rate,
             weight_decay=self.hparams.weight_decay,
         )
-        if "reduce_lr_on_plateau" in self.kwargs:
-            lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **self.kwargs["reduce_lr_on_plateau"])
-            lr_scheduler_config = {
-                "scheduler": lr_scheduler,
-                "interval": "epoch",
-                "frequency": 1,
-                "monitor": "val_loss",
-                "strict": True,
-                }
-            return {"optimizer": optimizer, "lr_scheduler": lr_scheduler_config}
-        return optimizer
+        self.optimizer = optimizer

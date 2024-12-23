@@ -775,7 +775,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.shape = shape
         self.in_channels = self.shape[0]
-        assert self.shape[1] == self.shape[2], "input must be square"
+        #assert self.shape[1] == self.shape[2], "input must be square"
         self.input_size = self.shape[1]
         self.chs = chs
         self.dim = len(self.shape) - 1
@@ -922,7 +922,7 @@ class Decoder(nn.Module):
     ):
         super().__init__()
         self.shape = shape
-        assert self.shape[1] == self.shape[2], "input must be square"
+        #assert self.shape[1] == self.shape[2], "input must be square"
         self.in_channels = self.shape[0]
         self.input_size = self.shape[1]
         self.chs = chs
